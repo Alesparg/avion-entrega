@@ -4,6 +4,8 @@
 #include <sstream>
 #include <vector>
 #include <fstream>
+#include <cstdio>
+#include <cstdlib>
 
 
 float toRadians(float degrees);
@@ -65,12 +67,21 @@ inline void limitarDentroPantalla(float& x, float& y, float margenX, float marge
 
 bool cargarBMP24(const char* ruta, std::vector<unsigned char>& datosRGB, int& ancho, int& alto) {
 	std::ifstream archivo(ruta, std::ios::binary);
-	if (!archivo.is_open()) return false;
+	if (!archivo.is_open()) {
+		printf("Error: No se pudo abrir el archivo: %s\n", ruta);
+		return false;
+	}
 
 	unsigned char cabecera[54];
 	archivo.read(reinterpret_cast<char*>(cabecera), 54);
-	if (archivo.gcount() != 54) return false;
-	if (cabecera[0] != 'B' || cabecera[1] != 'M') return false;
+	if (archivo.gcount() != 54) {
+		printf("Error: No se pudo leer la cabecera BMP completa\n");
+		return false;
+	}
+	if (cabecera[0] != 'B' || cabecera[1] != 'M') {
+		printf("Error: El archivo no es un BMP válido (firma incorrecta)\n");
+		return false;
+	}
 
 	unsigned int offsetDatos = *reinterpret_cast<unsigned int*>(&cabecera[10]);
 	unsigned int tamanoCabecera = *reinterpret_cast<unsigned int*>(&cabecera[14]);
@@ -79,10 +90,21 @@ bool cargarBMP24(const char* ruta, std::vector<unsigned char>& datosRGB, int& an
 	unsigned short bitsPorPixel = *reinterpret_cast<unsigned short*>(&cabecera[28]);
 	unsigned int compresion = *reinterpret_cast<unsigned int*>(&cabecera[30]);
 
-	if (tamanoCabecera < 40) return false;
-	if (bitsPorPixel != 24) return false; 
-	if (compresion != 0) return false; 
+	if (tamanoCabecera < 40) {
+		printf("Error: Tamaño de cabecera BMP inválido: %d\n", tamanoCabecera);
+		return false;
+	}
+	if (bitsPorPixel != 24) {
+		printf("Error: El BMP debe ser de 24 bits por pixel, encontrado: %d\n", bitsPorPixel);
+		return false;
+	}
+	if (compresion != 0) {
+		printf("Error: El BMP no debe estar comprimido, compresión encontrada: %d\n", compresion);
+		return false;
+	} 
 
+	printf("Información BMP: %dx%d, %d bits/pixel, compresión: %d\n", anchoImg, altoImg, bitsPorPixel, compresion);
+	
 	bool topDown = false;
 	if (altoImg < 0) {
 		altoImg = -altoImg;
@@ -123,9 +145,11 @@ void cargarTexturaFondo(const char* ruta) {
 	std::vector<unsigned char> rgb;
 	int w = 0, h = 0;
 	if (!cargarBMP24(ruta, rgb, w, h)) {
+		printf("Error: No se pudo cargar la textura desde: %s\n", ruta);
 		texturaFondoCargada = false;
 		return;
 	}
+	printf("Textura cargada exitosamente: %s (dimensiones: %dx%d)\n", ruta, w, h);
 
 	if (texturaFondo == 0) {
 		glGenTextures(1, &texturaFondo);
@@ -773,7 +797,26 @@ int main(int argc, char** argv) {
     glClearColor(0.0f, 0.0f, 0.0f, 0.1f);
 
    
-    cargarTexturaFondo("C:/Users/Equipo/Documents/avion/assets/espacio.bmp");
+    // Intentar múltiples rutas hasta encontrar el archivo
+    const char* rutas[] = {
+        "../assets/espacio.bmp",
+        
+    };
+    
+    bool encontrado = false;
+    for (int i = 0; rutas[i] != NULL; i++) {
+        printf("Intentando cargar: %s\n", rutas[i]);
+        cargarTexturaFondo(rutas[i]);
+        if (texturaFondoCargada) {
+            printf("¡Éxito! Textura cargada desde: %s\n", rutas[i]);
+            encontrado = true;
+            break;
+        }
+    }
+    
+    if (!encontrado) {
+        printf("ADVERTENCIA: No se pudo cargar la textura de fondo desde ninguna ruta. Se usará el fondo azul por defecto.\n");
+    }
 
     // Registrar callbacks
     glutDisplayFunc(display);

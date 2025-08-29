@@ -2,6 +2,11 @@
 #include <cmath>
 #include <string>
 #include <sstream>
+#include <vector>
+#include <fstream>
+
+
+float toRadians(float degrees);
 
 // Variables globales para la posición y rotación del avión
 float posX = 0.0f;
@@ -19,10 +24,141 @@ bool specialKeys[256] = { false };
 float deltaTime = 0.0f;
 int lastFrameTime = 0;
 
+// --- Textura de fondo ---
+GLuint texturaFondo = 0;
+int texturaFondoAncho = 0;
+int texturaFondoAlto = 0;
+bool texturaFondoCargada = false;
+
+// Parámetros de cámara/proyección 
+const float CAMARA_POS_Z = 2.0f;       
+const float FOV_Y_DEGREES = 60.0f;     
+const float AVION_MARGEN_X = 0.6f;     
+const float AVION_MARGEN_Y = 0.5f;     
+const float ENEMIGO_MARGEN_XY = 0.35f; 
+
+
+void obtenerExtensionesVisibles(float& halfX, float& halfY) {
+    int w = glutGet(GLUT_WINDOW_WIDTH);
+    int h = glutGet(GLUT_WINDOW_HEIGHT);
+    if (h <= 0) h = 1;
+    float aspect = static_cast<float>(w) / static_cast<float>(h);
+    halfY = static_cast<float>(std::tan(static_cast<double>(toRadians(FOV_Y_DEGREES * 0.5f))) * static_cast<double>(CAMARA_POS_Z));
+    halfX = aspect * halfY;
+}
+
+
+inline void limitarDentroPantalla(float& x, float& y, float margenX, float margenY) {
+    float halfX = 0.0f, halfY = 0.0f;
+    obtenerExtensionesVisibles(halfX, halfY);
+    float limiteX = (halfX * 0.98f) - margenX; 
+    float limiteY = (halfY * 0.98f) - margenY;
+    if (limiteX < 0.0f) limiteX = 0.0f; 
+    if (limiteY < 0.0f) limiteY = 0.0f;
+
+    if (x > limiteX) x = limiteX;
+    if (x < -limiteX) x = -limiteX;
+    if (y > limiteY) y = limiteY;
+    if (y < -limiteY) y = -limiteY;
+}
+
+
+bool cargarBMP24(const char* ruta, std::vector<unsigned char>& datosRGB, int& ancho, int& alto) {
+	std::ifstream archivo(ruta, std::ios::binary);
+	if (!archivo.is_open()) return false;
+
+	unsigned char cabecera[54];
+	archivo.read(reinterpret_cast<char*>(cabecera), 54);
+	if (archivo.gcount() != 54) return false;
+	if (cabecera[0] != 'B' || cabecera[1] != 'M') return false;
+
+	unsigned int offsetDatos = *reinterpret_cast<unsigned int*>(&cabecera[10]);
+	unsigned int tamanoCabecera = *reinterpret_cast<unsigned int*>(&cabecera[14]);
+	int anchoImg = *reinterpret_cast<int*>(&cabecera[18]);
+	int altoImg = *reinterpret_cast<int*>(&cabecera[22]);
+	unsigned short bitsPorPixel = *reinterpret_cast<unsigned short*>(&cabecera[28]);
+	unsigned int compresion = *reinterpret_cast<unsigned int*>(&cabecera[30]);
+
+	if (tamanoCabecera < 40) return false;
+	if (bitsPorPixel != 24) return false; 
+	if (compresion != 0) return false; 
+
+	bool topDown = false;
+	if (altoImg < 0) {
+		altoImg = -altoImg;
+		topDown = true;
+	}
+
+	
+	archivo.seekg(offsetDatos, std::ios::beg);
+
+	
+	int bytesPorFilaArchivo = ((anchoImg * 3 + 3) & ~3);
+	std::vector<unsigned char> bufferBGR(bytesPorFilaArchivo * altoImg);
+	archivo.read(reinterpret_cast<char*>(bufferBGR.data()), bufferBGR.size());
+	if (archivo.gcount() != static_cast<std::streamsize>(bufferBGR.size())) return false;
+
+	
+	datosRGB.resize(anchoImg * altoImg * 3);
+	for (int y = 0; y < altoImg; ++y) {
+		int filaOrigen = topDown ? y : (altoImg - 1 - y);
+		const unsigned char* ptrFila = &bufferBGR[filaOrigen * bytesPorFilaArchivo];
+		unsigned char* ptrDestino = &datosRGB[y * anchoImg * 3];
+		for (int x = 0; x < anchoImg; ++x) {
+			unsigned char b = ptrFila[x * 3 + 0];
+			unsigned char g = ptrFila[x * 3 + 1];
+			unsigned char r = ptrFila[x * 3 + 2];
+			ptrDestino[x * 3 + 0] = r;
+			ptrDestino[x * 3 + 1] = g;
+			ptrDestino[x * 3 + 2] = b;
+		}
+	}
+
+	ancho = anchoImg;
+	alto = altoImg;
+	return true;
+}
+
+void cargarTexturaFondo(const char* ruta) {
+	std::vector<unsigned char> rgb;
+	int w = 0, h = 0;
+	if (!cargarBMP24(ruta, rgb, w, h)) {
+		texturaFondoCargada = false;
+		return;
+	}
+
+	if (texturaFondo == 0) {
+		glGenTextures(1, &texturaFondo);
+	}
+	glBindTexture(GL_TEXTURE_2D, texturaFondo);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
+	glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB, GL_UNSIGNED_BYTE, rgb.data());
+	glBindTexture(GL_TEXTURE_2D, 0);
+
+	texturaFondoAncho = w;
+	texturaFondoAlto = h;
+	texturaFondoCargada = true;
+}
+
+// --- Enemigo ---
+struct Enemigo {
+    float x, y, z;
+    int energiaRestante;  
+    bool activo;
+    float velocidadX, velocidadY;
+    int tiempoUltimoMovimiento;
+};
+
+Enemigo enemigo = { 1.5f, 1.0f, 0.0f, 100, true, 0.2f, 0.15f, 0 };
+
 // --- Balas ---
 struct Bala {
     float x, y, z;
-    float dirX, dirY; // Dirección de la bala basada en la rotación del avión
+    float dirX, dirY; 
     bool activa;
 };
 const int MAX_BALAS = 50;
@@ -39,7 +175,7 @@ float toRadians(float degrees) {
 
 // Función para obtener la dirección cardinal
 std::string getDireccionCardinal(float angulo) {
-    
+
     while (angulo < 0) angulo += 360.0f;
     while (angulo >= 360.0f) angulo -= 360.0f;
 
@@ -54,18 +190,26 @@ std::string getDireccionCardinal(float angulo) {
     return "Noroeste";
 }
 
-
 void inicializarBalas() {
     for (int i = 0; i < MAX_BALAS; ++i) {
         balas[i].activa = false;
     }
 }
 
+// Función para detectar colisión entre bala y enemigo
+bool colisionBalaEnemigo(const Bala& bala, const Enemigo& enemigo) {
+    if (!enemigo.activo) return false;
+    float dx = bala.x - enemigo.x;
+    float dy = bala.y - enemigo.y;
+    float distancia = sqrt(dx * dx + dy * dy);
+    return distancia < 0.25f; 
+}
+
 // Dispara balas desde las ametralladoras en las alas
 void disparar() {
-    // Coordenadas relativas de las ametralladoras en las alas
-    float offsetX = 0.5f; // punta del ala
-    float offsetY = 0.38f; // lateral de cada ala
+    
+    float offsetX = 0.25f; 
+    float offsetY = 0.19f; 
     float z = 0.0f;
 
     // Calcula la dirección de las balas basada en la rotación del avión
@@ -94,7 +238,7 @@ void disparar() {
             balas[i].dirY = dirY;
             balas[i].activa = true;
 
-            
+
             for (int j = i + 1; j < MAX_BALAS; ++j) {
                 if (!balas[j].activa) {
                     balas[j].x = rightGunX;
@@ -111,9 +255,9 @@ void disparar() {
     }
 }
 
-// Mover balas según su dirección
+// Mover balas según su dirección y verificar colisiones
 void moverBalas(float deltaTime) {
-    float velocidad = 2.0f; // Unidades por segundo
+    float velocidad = 2.0f; 
     float distancia = velocidad * deltaTime;
 
     for (int i = 0; i < MAX_BALAS; ++i) {
@@ -121,9 +265,24 @@ void moverBalas(float deltaTime) {
             balas[i].x += balas[i].dirX * distancia;
             balas[i].y += balas[i].dirY * distancia;
 
-            // Si la bala está fuera de los límites de la pantalla
-            if (balas[i].x > 5.0f || balas[i].x < -5.0f ||
-                balas[i].y > 5.0f || balas[i].y < -5.0f) {
+            // Verificar colisión con enemigo
+            if (enemigo.activo && colisionBalaEnemigo(balas[i], enemigo)) {
+                enemigo.energiaRestante -= 10; 
+                balas[i].activa = false; // Destruye la bala
+
+                if (enemigo.energiaRestante <= 0) {
+                    enemigo.energiaRestante = 0; // Asegurar que no sea negativo
+                    enemigo.activo = false; // El enemigo es destruido
+                }
+            }
+
+            // Si la bala está fuera de los límites visibles, desactivarla
+            float halfX = 0.0f, halfY = 0.0f;
+            obtenerExtensionesVisibles(halfX, halfY);
+            float limiteX = halfX * 1.2f; // margen extra para que no desaparezca justo al borde
+            float limiteY = halfY * 1.2f;
+            if (balas[i].x > limiteX || balas[i].x < -limiteX ||
+                balas[i].y > limiteY || balas[i].y < -limiteY) {
                 balas[i].activa = false;
             }
         }
@@ -132,7 +291,7 @@ void moverBalas(float deltaTime) {
 
 // Dibuja balas
 void dibujarBalas() {
-    glColor3f(1.0f, 1.0f, 0.0f); 
+    glColor3f(1.0f, 1.0f, 0.0f);
     for (int i = 0; i < MAX_BALAS; ++i) {
         if (balas[i].activa) {
             glPushMatrix();
@@ -143,11 +302,156 @@ void dibujarBalas() {
     }
 }
 
+void dibujarEnemigo() {
+    if (!enemigo.activo) return;
+
+    GLUquadric* quad = gluNewQuadric();
+    glPushMatrix();
+    glTranslatef(enemigo.x, enemigo.y, enemigo.z);
+
+    // Cuerpo del enemigo (rojo)
+    glColor3f(1.0f, 0.0f, 0.0f);
+    glutSolidSphere(0.2f, 16, 16);
+
+    // Alas del enemigo
+    glColor3f(0.8f, 0.0f, 0.0f);
+    glPushMatrix();
+    glScalef(0.4f, 0.1f, 0.05f);
+    glutSolidCube(1.0);
+    glPopMatrix();
+
+    // Indicador de energía (barra encima del enemigo)
+    glPushMatrix();
+    glTranslatef(0.0f, 0.0f, 0.3f);
+
+    // Barra de fondo (roja)
+    glColor3f(0.8f, 0.2f, 0.2f);
+    glPushMatrix();
+    glScalef(0.4f, 0.05f, 0.01f);
+    glutSolidCube(1.0);
+    glPopMatrix();
+
+    // Barra de energía (verde)
+    float porcentajeEnergia = enemigo.energiaRestante / 100.0f;
+    glColor3f(0.0f, 1.0f, 0.0f);
+    glPushMatrix();
+    glTranslatef(-(0.4f * (1.0f - porcentajeEnergia)) / 2.0f, 0.0f, 0.01f);
+    glScalef(0.4f * porcentajeEnergia, 0.05f, 0.01f);
+    glutSolidCube(1.0);
+    glPopMatrix();
+
+    glPopMatrix();
+    glPopMatrix();
+
+    gluDeleteQuadric(quad);
+}
+
+void actualizarEnemigo(float deltaTime) {
+    static int tiempoDestruccion = 0;
+    int tiempoActual = glutGet(GLUT_ELAPSED_TIME);
+
+    if (!enemigo.activo) {
+        // Regenerar enemigo si fue destruido (después de 3 segundos)
+        if (tiempoDestruccion == 0) {
+            tiempoDestruccion = tiempoActual;
+        }
+        else if (tiempoActual - tiempoDestruccion > 3000) {
+            // Asegurar que el enemigo aparezca SIEMPRE dentro de los límites visibles
+            enemigo.x = ((rand() % 500) - 250) / 100.0f; 
+            enemigo.y = ((rand() % 500) - 250) / 100.0f; 
+            enemigo.energiaRestante = 100;
+            enemigo.activo = true;
+            enemigo.velocidadX = ((rand() % 60) - 30) / 100.0f; 
+            enemigo.velocidadY = ((rand() % 60) - 30) / 100.0f; 
+            tiempoDestruccion = 0;
+        }
+        return;
+    }
+
+    // Cambiar dirección cada 3 segundos
+    if (tiempoActual - enemigo.tiempoUltimoMovimiento > 3000) {
+        enemigo.velocidadX = ((rand() % 60) - 30) / 100.0f; 
+        enemigo.velocidadY = ((rand() % 60) - 30) / 100.0f; 
+        enemigo.tiempoUltimoMovimiento = tiempoActual;
+    }
+
+    // Mover enemigo
+    enemigo.x += enemigo.velocidadX * deltaTime;
+    enemigo.y += enemigo.velocidadY * deltaTime;
+
+    
+    float halfX = 0.0f, halfY = 0.0f;
+    obtenerExtensionesVisibles(halfX, halfY);
+    float limiteX = (halfX * 0.98f) - ENEMIGO_MARGEN_XY;
+    float limiteY = (halfY * 0.98f) - ENEMIGO_MARGEN_XY;
+    if (limiteX < 0.0f) limiteX = 0.0f;
+    if (limiteY < 0.0f) limiteY = 0.0f;
+
+    if (enemigo.x > limiteX) {
+        enemigo.x = limiteX;
+        enemigo.velocidadX = -abs(enemigo.velocidadX);
+    }
+    if (enemigo.x < -limiteX) {
+        enemigo.x = -limiteX;
+        enemigo.velocidadX = abs(enemigo.velocidadX);
+    }
+    if (enemigo.y > limiteY) {
+        enemigo.y = limiteY;
+        enemigo.velocidadY = -abs(enemigo.velocidadY);
+    }
+    if (enemigo.y < -limiteY) {
+        enemigo.y = -limiteY;
+        enemigo.velocidadY = abs(enemigo.velocidadY);
+    }
+}
+
+void dibujarFondoImagen() {
+    glDisable(GL_DEPTH_TEST);
+    glMatrixMode(GL_PROJECTION);
+    glPushMatrix();
+    glLoadIdentity();
+    gluOrtho2D(-5, 5, -5, 5);
+
+    glMatrixMode(GL_MODELVIEW);
+    glPushMatrix();
+    glLoadIdentity();
+
+    if (texturaFondoCargada) {
+        glEnable(GL_TEXTURE_2D);
+        glBindTexture(GL_TEXTURE_2D, texturaFondo);
+        glColor3f(1.0f, 1.0f, 1.0f);
+        glBegin(GL_QUADS);
+        glTexCoord2f(0.0f, 1.0f); glVertex2f(-5.0f,  5.0f);
+        glTexCoord2f(1.0f, 1.0f); glVertex2f( 5.0f,  5.0f);
+        glTexCoord2f(1.0f, 0.0f); glVertex2f( 5.0f, -5.0f);
+        glTexCoord2f(0.0f, 0.0f); glVertex2f(-5.0f, -5.0f);
+        glEnd();
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glDisable(GL_TEXTURE_2D);
+    } else {
+        
+        glBegin(GL_QUADS);
+        glColor3f(0.0f, 0.3f, 0.7f);
+        glVertex2f(-5.0f, 5.0f);
+        glVertex2f(5.0f, 5.0f);
+        glColor3f(0.4f, 0.6f, 1.0f);
+        glVertex2f(5.0f, -5.0f);
+        glVertex2f(-5.0f, -5.0f);
+        glEnd();
+    }
+
+    glPopMatrix();
+    glMatrixMode(GL_PROJECTION);
+    glPopMatrix();
+    glMatrixMode(GL_MODELVIEW);
+    glEnable(GL_DEPTH_TEST);
+}
+
 void dibujarFaros() {
-    // Posicion relativas a las puntas de las alas
-    float offsetX = 0.5f;
-    float offsetY = 0.38f;
-    float z = 0.05f;
+    
+    float offsetX = 0.25f; 
+    float offsetY = 0.19f; 
+    float z = 0.025f; 
 
     // Transforma las posiciones de los faros según la rotación
     float radRotation = toRadians(rotacion);
@@ -161,24 +465,24 @@ void dibujarFaros() {
     float rightLightY = posY + (offsetX * sinRot + offsetY * cosRot);
 
     // Color de los faros
-    glColor3f(1.0f, 1.0f, 1.0f); 
+    glColor3f(1.0f, 1.0f, 1.0f);
 
     // Izquierdo
     glPushMatrix();
     glTranslatef(leftLightX, leftLightY, z);
-    glutSolidSphere(0.03, 12, 12);
+    glutSolidSphere(0.015, 12, 12); 
 
     // Haz de luz si está encendido
     if (farosEncendidos) {
-        glColor4f(1.0f, 1.0f, 0.7f, 0.3f); 
+        glColor4f(1.0f, 1.0f, 0.7f, 0.3f);
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glPushMatrix();
-        glRotatef(rotacion, 0, 0, 1); 
+        glRotatef(rotacion, 0, 0, 1);
         glBegin(GL_TRIANGLES);
         glVertex3f(0.0f, 0.0f, 0.0f);
-        glVertex3f(0.25f, -0.05f, -0.01f);
-        glVertex3f(0.25f, 0.05f, 0.01f);
+        glVertex3f(0.125f, -0.025f, -0.005f); 
+        glVertex3f(0.125f, 0.025f, 0.005f); 
         glEnd();
         glPopMatrix();
         glDisable(GL_BLEND);
@@ -189,18 +493,18 @@ void dibujarFaros() {
     glColor3f(1.0f, 1.0f, 1.0f);
     glPushMatrix();
     glTranslatef(rightLightX, rightLightY, z);
-    glutSolidSphere(0.03, 12, 12);
+    glutSolidSphere(0.015, 12, 12); 
 
     if (farosEncendidos) {
         glColor4f(1.0f, 1.0f, 0.7f, 0.3f);
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glPushMatrix();
-        glRotatef(rotacion, 0, 0, 1); 
+        glRotatef(rotacion, 0, 0, 1);
         glBegin(GL_TRIANGLES);
         glVertex3f(0.0f, 0.0f, 0.0f);
-        glVertex3f(0.25f, 0.05f, -0.01f);
-        glVertex3f(0.25f, -0.05f, 0.01f);
+        glVertex3f(0.125f, 0.025f, -0.005f); 
+        glVertex3f(0.125f, -0.025f, 0.005f); 
         glEnd();
         glPopMatrix();
         glDisable(GL_BLEND);
@@ -215,10 +519,13 @@ void dibujarAvion3D() {
     glTranslatef(posX, posY, 0.0f);
     glRotatef(rotacion, 0.0f, 0.0f, 1.0f);
 
+    
+    glScalef(0.5f, 0.5f, 0.5f);
+
     // Fuselaje (cilindro largo)
     glColor3f(0.2f, 0.2f, 1.0f); // Azul
     glPushMatrix();
-    glRotatef(90, 0, 1, 0); 
+    glRotatef(90, 0, 1, 0);
     gluCylinder(quad, 0.07, 0.07, 1.0, 32, 32);
     // Punta delantera (cono)
     glPushMatrix();
@@ -244,15 +551,15 @@ void dibujarAvion3D() {
     glPushMatrix();
     glTranslatef(0.2f, 0.0f, 0.0f);
     glBegin(GL_QUADS);
-    glVertex3f(-0.1f, -0.5f, 0.0f); 
-    glVertex3f(0.5f, -0.25f, 0.0f); 
-    glVertex3f(0.5f, 0.25f, 0.0f); 
-    glVertex3f(-0.1f, 0.5f, 0.0f); 
+    glVertex3f(-0.1f, -0.5f, 0.0f);
+    glVertex3f(0.5f, -0.25f, 0.0f);
+    glVertex3f(0.5f, 0.25f, 0.0f);
+    glVertex3f(-0.1f, 0.5f, 0.0f);
     glEnd();
     glPopMatrix();
 
     // Motores bajo las alas
-    glColor3f(0.3f, 0.3f, 0.3f); 
+    glColor3f(0.3f, 0.3f, 0.3f);
     // Motor izquierdo
     glPushMatrix();
     glTranslatef(0.35f, -0.28f, -0.07f);
@@ -288,7 +595,7 @@ void dibujarAvion3D() {
     glPopMatrix();
 
     // --- Ametralladoras en las alas ---
-    glColor3f(0.1f, 0.1f, 0.1f); 
+    glColor3f(0.1f, 0.1f, 0.1f);
     // Izquierda
     glPushMatrix();
     glTranslatef(0.5f, -0.38f, 0.0f);
@@ -334,7 +641,9 @@ void display() {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glLoadIdentity();
 
-    
+    // Dibujar fondo primero
+    dibujarFondoImagen();
+
     gluLookAt(0.0, 0.0, 2.0,   // Posición de la cámara
         0.0, 0.0, 0.0,   // Hacia dónde mira
         0.0, 1.0, 0.0);  // Vector "arriba"
@@ -342,6 +651,7 @@ void display() {
     dibujarAvion3D();
     dibujarBalas();
     dibujarFaros();
+    dibujarEnemigo();
 
     // Obtiene y muestra la información del avión
     std::string direccion = getDireccionCardinal(rotacion);
@@ -352,8 +662,20 @@ void display() {
     if (farosEncendidos) ss << " | Faros: ENCENDIDOS";
     else ss << " | Faros: APAGADOS";
 
+    // Información del enemigo - VIDA EN NÚMEROS GRANDES
+    std::stringstream enemyInfo;
+    if (enemigo.activo) {
+        enemyInfo << "ENERGIA RESTANTE: " << enemigo.energiaRestante;
+    }
+    else {
+        enemyInfo << "ENEMIGO DESTRUIDO - Reapareciendo...";
+    }
+
     dibujarTexto(10, 20, ss.str().c_str());
     dibujarTexto(10, 40, "Controles: W/S - Avanzar/Retroceder, A/D - Rotar, R - Disparar, T - Faros");
+
+    // Dibujar la vida del enemigo 
+    dibujarTexto(10, 80, enemyInfo.str().c_str());
 
     glutSwapBuffers();
 }
@@ -362,14 +684,14 @@ void reshape(int w, int h) {
     glViewport(0, 0, w, h);
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
-    gluPerspective(60.0, (float)w / (float)h, 0.1, 10.0);
+    gluPerspective(FOV_Y_DEGREES, (float)w / (float)h, 0.1, 10.0);
     glMatrixMode(GL_MODELVIEW);
 }
 
 void keyboard(unsigned char key, int x, int y) {
     keys[key] = true;
 
-    // Teclas que funcionan como toggle (una pulsación)
+    
     switch (key) {
     case 'r':
     case 'R':
@@ -388,9 +710,9 @@ void keyboardUp(unsigned char key, int x, int y) {
 }
 
 void idle() {
-    
+
     int currentTime = glutGet(GLUT_ELAPSED_TIME);
-    deltaTime = (currentTime - lastFrameTime) / 1000.0f; 
+    deltaTime = (currentTime - lastFrameTime) / 1000.0f;
     lastFrameTime = currentTime;
 
     // Limita delta time para evitar saltos grandes
@@ -426,8 +748,12 @@ void idle() {
         if (rotacion < 0.0f) rotacion += 360.0f;
     }
 
-    // Actualiza balas
+    // Limitar posición del avión con límites dinámicos y márgenes del propio avión
+    limitarDentroPantalla(posX, posY, AVION_MARGEN_X, AVION_MARGEN_Y);
+
+    // Actualiza balas y enemigo
     moverBalas(deltaTime);
+    actualizarEnemigo(deltaTime);
 
     glutPostRedisplay();
 }
@@ -437,14 +763,17 @@ int main(int argc, char** argv) {
     glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH);
     glutInitWindowSize(800, 600);
     glutInitWindowPosition(100, 100);
-    glutCreateWindow("Avión 3D con Rotación");
+    glutCreateWindow("Avión 3D con Enemigo y Combate");
 
-    
+
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LEQUAL);
 
     // Color de fondo
-    glClearColor(0.0f, 0.0f, 0.0f, 0.1f); 
+    glClearColor(0.0f, 0.0f, 0.0f, 0.1f);
+
+   
+    cargarTexturaFondo("C:/Users/Equipo/Documents/avion/assets/espacio.bmp");
 
     // Registrar callbacks
     glutDisplayFunc(display);
@@ -460,4 +789,3 @@ int main(int argc, char** argv) {
     glutMainLoop();
     return 0;
 }
-
